@@ -1,23 +1,22 @@
-import redis from 'redis';
+#!/usr/bin/yarn dev
+import { createClient } from 'redis';
 
-const publisher = redis.createClient();
+const client = createClient();
 
-publisher.on('error', (error) => {
-  console.log(`Redis client not connected to the server: ${error.message}`);
+client.on('error', (err) => {
+  console.log('Redis client not connected to the server:', err.toString());
 });
 
-publisher.on('connect', () => {
-  console.log('Redis client connected to the server');
-});
-
-const CHANNEL = 'holberton school channel';
-
-function publishMessage(message, time) {
+const publishMessage = (message, time) => {
   setTimeout(() => {
     console.log(`About to send ${message}`);
-    publisher.publish(CHANNEL, message);
+    client.publish('holberton school channel', message);
   }, time);
-}
+};
+
+client.on('connect', () => {
+  console.log('Redis client connected to the server');
+});
 
 publishMessage('Holberton Student #1 starts course', 100);
 publishMessage('Holberton Student #2 starts course', 200);

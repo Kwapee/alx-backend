@@ -1,99 +1,98 @@
+#!/usr/bin/yarn dev
 import express from 'express';
-import kue from 'kue';
-import redis from 'redis';
 import { promisify } from 'util';
-
-// utils 
-
-// redis 
-
-const client = redis.createClient();
-const getAsync = promisify(client.get).bind(client);
-let reservationEnabled;
-
-const seatsKey = 'available_seats';
-
-function reserveSeat(number) {
-  client.set(seatsKey, number);
-}
-
-async function getCurrentAvailableSeats() {
-  const availableSeats = await getAsync(seatsKey);
-  return availableSeats;
-}
-
-client.on('error', (error) => {
-  console.log(`Redis client not connected to the server: ${error.message}`);
-});
-
-client.on('connect', () => {
-  console.log('Redis client connected to the server');
-
-  reserveSeat(50);
-  reservationEnabled = true;
-});
-
-// kue  
-
-const queue = kue.createQueue();
-const queueName = 'reserve_seat';
-
-// express  
+import { createQueue } from 'kue';
+import { createClient } from 'redis';
 
 const app = express();
-const port = 1245;
+const client = createClient({ name: 'reserve_seat' });
+const queue = createQueue();
+const INITIAL_SEATS_COUNT = 50;
+let reservationEnabled = false;
+const PORT = 1245;
 
-app.listen(port, () => {
-  console.log(`app listening at http://localhost:${port}`);
+/**
+ * Modifies the number of available seats.
+ * @param {number} number - The new number of seats.
+ */
+const reserveSeat = async (number) => {
+  return promisify(client.SET).bind(client)('available_seats', number);
+};
+
+/**
+ * Retrieves the number of available seats.
+ * @returns {Promise<String>}
+ */
+const getCurrentAvailableSeats = async () => {
+  return promisify(client.GET).bind(client)('available_seats');
+};
+
+app.get('/available_seats', (_, res) => {
+  getCurrentAvailableSeats()
+    // .then(result => Number.parseInt(result || 0))
+    .then((numberOfAvailableSeats) => {
+      res.json({ numberOfAvailableSeats })
+    });
 });
 
-app.get('/available_seats', async (req, res) => {
-  const availableSeats = await getCurrentAvailableSeats();
-  res.json({ numberOfAvailableSeats: availableSeats });
-});
-
-app.get('/reserve_seat', (req, res) => {
-  if (reservationEnabled === false) {
+app.get('/reserve_seat', (_req, res) => {
+  if (!reservationEnabled) {
     res.json({ status: 'Reservation are blocked' });
     return;
   }
+  try {
+    const job = queue.create('reserve_seat');
 
-  const jobFormat = {};
-
-  const job = queue.create(queueName, jobFormat).save((err) => {
-    if (err) {
-      res.json({ status: 'Reservation failed' });
-    } else {
-      res.json({ status: 'Reservation in process' });
-    }
-  });
-
-  job.on('complete', () => {
-    console.log(`Seat reservation job ${job.id} completed`);
-  });
-
-  job.on('failed', (errorMessage) => {
-    console.log(`Seat reservation job ${job.id} failed: ${errorMessage}`);
-  });
+    job.on('failed', (err) => {
+      console.log(
+        'Seat reservation job',
+        job.id,
+        'failed:',
+        err.message || err.toString(),
+      );
+    });
+    job.on('complete', () => {
+      console.log(
+        'Seat reservation job',
+        job.id,
+        'completed'
+      );
+    });
+    job.save();
+    res.json({ status: 'Reservation in process' });
+  } catch {
+    res.json({ status: 'Reservation failed' });
+  }
 });
 
-app.get('/process', async (req, res) => {
-  queue.process(queueName, async (job, done) => {
-    let availableSeats = await getCurrentAvailableSeats();
-
-    if (availableSeats <= 0) {
-      done(Error('Not enough seats available'));
-    }
-
-    availableSeats = Number(availableSeats) - 1;
-
-    reserveSeat(availableSeats);
-
-    if (availableSeats <= 0) {
-      reservationEnabled = false;
-    }
-
-    done();
-  });
+app.get('/process', (_req, res) => {
   res.json({ status: 'Queue processing' });
+  queue.process('reserve_seat', (_job, done) => {
+    getCurrentAvailableSeats()
+      .then((result) => Number.parseInt(result || 0))
+      .then((availableSeats) => {
+        reservationEnabled = availableSeats <= 1 ? false : reservationEnabled;
+        if (availableSeats >= 1) {
+          reserveSeat(availableSeats - 1)
+            .then(() => done());
+        } else {
+          done(new Error('Not enough seats available'));
+        }
+      });
+  });
 });
+
+const resetAvailableSeats = async (initialSeatsCount) => {
+  return promisify(client.SET)
+    .bind(client)('available_seats', Number.parseInt(initialSeatsCount));
+};
+
+app.listen(PORT, () => {
+  resetAvailableSeats(process.env.INITIAL_SEATS_COUNT || INITIAL_SEATS_COUNT)
+    .then(() => {
+      reservationEnabled = true;
+      console.log(`API available on localhost port ${PORT}`);
+    });
+});
+
+export default app;

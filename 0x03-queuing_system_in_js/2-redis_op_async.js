@@ -1,26 +1,28 @@
-import redis from 'redis';
+#!/usr/bin/yarn dev
 import { promisify } from 'util';
+import { createClient, print } from 'redis';
 
-const client = redis.createClient();
-const getAsync = promisify(client.get).bind(client);
+const client = createClient();
 
-client.on('error', (error) => {
-  console.log(`Redis client not connected to the server: ${error.message}`);
+client.on('error', (err) => {
+  console.log('Redis client not connected to the server:', err.toString());
 });
 
-client.on('connect', () => {
+const setNewSchool = (schoolName, value) => {
+  client.SET(schoolName, value, print);
+};
+
+const displaySchoolValue = async (schoolName) => {
+  console.log(await promisify(client.GET).bind(client)(schoolName));
+};
+
+async function main() {
+  await displaySchoolValue('Holberton');
+  setNewSchool('HolbertonSanFrancisco', '100');
+  await displaySchoolValue('HolbertonSanFrancisco');
+}
+
+client.on('connect', async () => {
   console.log('Redis client connected to the server');
+  await main();
 });
-
-function setNewSchool(schoolName, value) {
-  client.set(schoolName, value, redis.print);
-}
-
-async function displaySchoolValue(schoolName) {
-  const value = await getAsync(schoolName);
-  console.log(value);
-}
-
-displaySchoolValue('Holberton');
-setNewSchool('HolbertonSanFrancisco', '100');
-displaySchoolValue('HolbertonSanFrancisco');
